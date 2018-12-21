@@ -122,6 +122,8 @@ def get_server_status(con):
         data = con.admin.command(son.SON([('serverStatus', 1)]))
     return data
 
+replicaset = None
+database = None
 
 def main(argv):
     p = optparse.OptionParser(conflict_handler="resolve", description="This Nagios plugin checks the health of mongodb.")
@@ -179,17 +181,19 @@ def main(argv):
     perf_data = options.perf_data
     max_lag = options.max_lag
     mongo_version = options.mongo_version
+    global database
     database = options.database
     ssl = options.ssl
+    global replicaset
     replicaset = options.replicaset
     insecure = options.insecure
     ssl_ca_cert_file = options.ssl_ca_cert_file
     cert_file = options.cert_file
 
-    if action == 'replica_primary' and replicaset is None:
-        return "replicaset must be passed in when using replica_primary check"
-    elif not action == 'replica_primary' and replicaset:
-        return "passing a replicaset while not checking replica_primary does not work"
+#    if action == 'replica_primary' and replicaset is None:
+#        return "replicaset must be passed in when using replica_primary check"
+#    elif not action == 'replica_primary' and replicaset:
+#        return "passing a replicaset while not checking replica_primary does not work"
 
     #
     # moving the login up here and passing in the connection
@@ -303,16 +307,22 @@ def mongo_connect(host=None, port=None, ssl=False, user=None, passwd=None, repli
 
     try:
         # ssl connection for pymongo > 2.3
-        if pymongo.version >= "2.3":
-            if replica is None:
-                con = pymongo.MongoClient(host, port, **con_args)
-            else:
-                con = pymongo.MongoClient(host, port, read_preference=pymongo.ReadPreference.SECONDARY, replicaSet=replica, **con_args)
-        else:
-            if replica is None:
-                con = pymongo.Connection(host, port, slave_okay=True, network_timeout=10)
-            else:
-                con = pymongo.Connection(host, port, slave_okay=True, network_timeout=10)
+	uri = 'mongodb://' + user + ':' + passwd + '@' + host + ':' + str(port) + '/' + database + '?authSource=' + authdb + '&replicaSet=' + replica  + '&ssl=true'
+        #if pymongo.version >= "2.3":
+        #    if replica is None:
+        #        con = pymongo.MongoClient(host, port, **con_args)
+        #    else:
+        #        con = pymongo.MongoClient(host, port, read_preference=pymongo.ReadPreference.SECONDARY, replicaSet=replica, username=user, password=passwd, **con_args)
+        #else:
+        #    if replica is None:
+        #        con = pymongo.Connection(host, port, slave_okay=True, network_timeout=10)
+        #    else:
+        #        con = pymongo.Connection(host, port, slave_okay=True, network_timeout=10)
+
+	if ssl:
+	    con = pymongo.MongoClient(uri, ssl=True, ssl_certfile=ssl_cert, ssl_cert_reqs=con_args['ssl_cert_reqs'], ssl_ca_certs=ssl_ca_cert_file)
+	else:
+	    con = pymongo.MongoClient(uri)
 
         # we must authenticate the connection, otherwise we won't be able to perform certain operations
         if ssl_cert and ssl_ca_cert_file and user:
@@ -321,17 +331,17 @@ def mongo_connect(host=None, port=None, ssl=False, user=None, passwd=None, repli
         try:
           result = con.admin.command("ismaster")
         except ConnectionFailure:
-          print("CRITICAL - Connection to Mongo server on %s:%s has failed" % (host, port) )
+          print("CRITICAL - Connection to Mongo server on %s:%s has failed" % (host, str(port)) )
           sys.exit(2)
 
         if 'arbiterOnly' in result and result['arbiterOnly'] == True:
-            print "OK - State: 7 (Arbiter on port %s)" % (port)
+            print "OK - State: 7 (Arbiter on port %s)" % (str(port))
             sys.exit(0)
 
         if user and passwd:
             db = con[authdb]
             try:
-              db.authenticate(user, password=passwd)
+              db.authenticate(name=user, password=passwd)
             except PyMongoError:
                 sys.exit("Username/Password incorrect")
 
@@ -515,7 +525,7 @@ def check_rep_lag(con, host, port, warning, critical, percent, perf_data, max_la
                 lag = float(optime_lag.seconds + optime_lag.days * 24 * 3600)
 
             if percent:
-                err, con = mongo_connect(primary_node['name'].split(':')[0], int(primary_node['name'].split(':')[1]), ssl, user, passwd, None, None, insecure, ssl_ca_cert_file, cert_file)
+                err, con = mongo_connect(primary_node['name'].split(':')[0], int(primary_node['name'].split(':')[1]), ssl, user, passwd, replicaset, "admin", insecure, ssl_ca_cert_file, cert_file)
                 if err != 0:
                     return err
                 primary_timediff = replication_get_time_diff(con)
